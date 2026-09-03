@@ -14,14 +14,15 @@
  */
 
 #include <stdlib.h>
-#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdarg.h>
-#include <ctype.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 #include <signal.h>
+
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/types.h>
@@ -32,7 +33,6 @@
 
 #define MS_VERSION "0.3"
 #define MS_MAX_SERVERS 128
-#define MS_MAX_CLIENTS (MS_MAX_SERVERS + 1)
 #define MS_URGENT_FILE "urgent.txt"
 #define MS_MOTD_FILE "motd.txt"
 #define MS_BAN_FILE "master_bans.txt"
@@ -87,7 +87,7 @@ typedef struct enet_buf_s {
   enet_uint8 *data;
   size_t size;
   size_t pos;
-  int overflow;
+  bool overflow;
 } enet_buf_t;
 
 typedef struct ban_record_s {
@@ -120,7 +120,7 @@ static int max_servers = DEFAULT_MAX_SERVERS;
 static int max_servers_per_host = DEFAULT_MAX_PER_HOST;
 static int num_servers = 0;
 
-// fake servers to show on old versions of the game
+// fake servers to show on old versions of the game (chars are in Windows-1251)
 static const server_t fake_servers[] = {
   {
     .name  = "! \xc2\xc0\xd8\xc0 \xca\xce\xcf\xc8\xdf \xc8\xc3\xd0\xdb"
@@ -286,12 +286,12 @@ static inline void u_printsv(const server_t *sv) {
 
 /* buffer utility functions */
 
-static inline int b_enough_left(enet_buf_t *buf, size_t size) {
+static inline bool b_enough_left(enet_buf_t *buf, size_t size) {
   if (buf->pos + size > buf->size) {
-    buf->overflow = 1;
-    return 0;
+    buf->overflow = true;
+    return false;
   }
-  return 1;
+  return true;
 }
 
 static enet_uint8 b_read_uint8(enet_buf_t *buf) {
@@ -891,7 +891,7 @@ static bool handle_msg(const enet_uint8 msgid, ENetPeer *peer) {
 
     case NET_MSG_LIST:
       buf_send.pos = 0;
-      buf_send.overflow = 0;
+      buf_send.overflow = false;
       b_write_uint8(&buf_send, NET_MSG_LIST);
 
       clientver[0] = 0;
@@ -1068,7 +1068,12 @@ int main(int argc, char **argv) {
   ENetAddress addr;
   addr.host = 0;
   addr.port = ms_port;
-  ms_host = enet_host_create(&addr, MS_MAX_CLIENTS, NET_CH_COUNT + 1, 0, 0);
+
+  // NB: MS_MAX_SERVERS+1 is necessary to still allow connections even if the list is already full,
+  // with every server having an unique peer that keeps it, so there are as many peers as entries.
+  // NB: NET_CH_COUNT+1 is needed to later detect whether the number of channels requested by the
+  // peer exceeds the valid count, because ENet host would reduce it to the limit specified here. 
+  ms_host = enet_host_create(&addr, MS_MAX_SERVERS+1, NET_CH_COUNT+1, 0, 0);
   if (!ms_host)
     u_fatal("could not create enet host on port %d", ms_port);
 
@@ -1087,7 +1092,7 @@ int main(int argc, char **argv) {
           case ENET_EVENT_TYPE_CONNECT:
             u_log(LOG_NOTE, "%s:%d connected", u_iptostr(event.peer->address.host), event.peer->address.port);
             if (event.peer->channelCount != NET_CH_COUNT)
-              ban_peer(event.peer, "what is this");
+              ban_peer(event.peer, "wrong number of channels requested");
             else
               enet_peer_timeout(event.peer, 0, 0, ms_cl_timeout * 1000);
             break;
@@ -1099,7 +1104,7 @@ int main(int argc, char **argv) {
             }
             // set up receive buffer
             buf_recv.pos = 0;
-            buf_recv.overflow = 0;
+            buf_recv.overflow = false;
             buf_recv.data = event.packet->data;
             buf_recv.size = event.packet->dataLength;
             // read message id and handle the message
@@ -1111,7 +1116,6 @@ int main(int argc, char **argv) {
             break;
 
           case ENET_EVENT_TYPE_DISCONNECT:
-
             // u_log(LOG_NOTE, "%s:%d disconnected", u_iptostr(event.peer->address.host), event.peer->address.port);
             break;
 
